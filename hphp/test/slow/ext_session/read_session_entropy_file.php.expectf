@@ -1,0 +1,9 @@
+*** Testing session_id() : variation ***
+bool(true)
+string(%d) "%s"
+bool(true)
+bool(true)
+string(%d) "%s"
+bool(true)
+bool(true)
+Done
