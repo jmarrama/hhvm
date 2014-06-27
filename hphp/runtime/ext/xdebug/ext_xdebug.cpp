@@ -16,6 +16,7 @@
 */
 
 #include "hphp/runtime/ext/xdebug/ext_xdebug.h"
+#include "hphp/runtime/ext/xdebug/xdebug_xml.h"
 #include "hphp/runtime/base/code-coverage.h"
 #include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/base/thread-info.h"
@@ -28,6 +29,10 @@ TRACE_SET_MOD(xdebug);
 namespace HPHP {
 
 #define XDEBUG_COMMAND_DELIM '\0'
+#define XDEBUG_AUTHOR "ochotinun+jmarrama@box.com"
+#define XDEBUG_URL "unicorns.org"
+#define XDEBUG_COPYRIGHT "onmytodolist,facebookownsthis"
+#define DBGP_VERSION "1.0"
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -54,6 +59,33 @@ static ActRec *get_call_fp(Offset *off = nullptr) {
   }
   return fp1;
 }
+
+static xdebug_str *make_message(xdebug_xml_node *message)
+{
+  xdebug_str  xml_message = {0, 0, NULL};
+  xdebug_str *ret;
+
+  xdebug_str_ptr_init(ret);
+
+  xdebug_xml_return_node(message, &xml_message);
+
+  xdebug_str_add(ret, xdebug_sprintf("%d", xml_message.l + sizeof("<?xml version=\"1.0\" encoding=\"iso-8859-1\"?>\n") - 1), 1);
+  xdebug_str_addl(ret, "\0", 1, 0);
+  xdebug_str_add(ret, "<?xml version=\"1.0\" encoding=\"iso-8859-1\"?>\n", 0);
+  xdebug_str_add(ret, xml_message.d, 0);
+  xdebug_str_addl(ret, "\0", 1, 0);
+  xdebug_str_dtor(xml_message);
+
+  return ret;
+}
+
+static void send_message(int socketFd, xdebug_xml_node *message)
+{
+  xdebug_str *tmp = make_message(message);
+  write(socketFd, tmp->d, tmp->l);
+  xdebug_str_ptr_dtor(tmp);
+}
+
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -328,38 +360,36 @@ char* XDebugExtension::read_next_command(int sock_fd, fd_buf *context)
   return tmp;
 }
 
-size_t XDebugExtension::prepare_message(char *msgBuffer /* has to be sufficiently large */, const char *str, int transactionId)
-{
-  const char *xmlHeader = "<?xml version=\"1.0\" encoding=\"iso-8859-1\"?>\n";
-  char sizeStr[255];
-  char *bufPtr = msgBuffer;
-  char *xmlMsg = new char[strlen(str) + 100];
-  if (transactionId >= 0)
-    sprintf(xmlMsg, str, transactionId);
-  else
-    sprintf(xmlMsg, "%s", str);
-  size_t msgLen = strlen(xmlHeader) + strlen(xmlMsg);
-  sprintf(sizeStr, "%d", (int) msgLen);
-  memcpy(bufPtr, sizeStr, strlen(sizeStr));
-  // skip 1 char for 0
-  bufPtr += (strlen(sizeStr) + 1);
-  memcpy(bufPtr, xmlHeader, strlen(xmlHeader)); // no null_terminating string
-  bufPtr += strlen(xmlHeader);
-  memcpy(bufPtr, xmlMsg, strlen(xmlMsg));
-  bufPtr += strlen(xmlMsg) + 1;
-  printf("msgLen = %d\nmsg = %s", (int) msgLen, msgBuffer +strlen(sizeStr) + 1);
-  return (bufPtr - msgBuffer);
-}
-
-
 void XDebugExtension::setupXDebugSession() {
-  char msgBuffer[40960]; // used for writing resposnes to IntelliJ
-  const char* init_msg = "<init xmlns=\"urn:debugger_protocol_v1\" xmlns:xdebug=\"http://xdebug.org/dbgp/xdebug\" fileuri=\"file:///box/www/ochotinun/index.php\" language=\"PHP\" protocol_version=\"1.0\" appid=\"20311\"><engine version=\"2.2.1\"><![CDATA[Xdebug]]></engine><author><![CDATA[Derick Rethans]]></author><url><![CDATA[http://xdebug.org]]></url><copyright><![CDATA[Copyright (c) 2002-2012 by Derick Rethans]]></copyright></init>";
-  int64_t sent = 0;
-  size_t init_len = prepare_message(msgBuffer, init_msg, -1);
-  while (sent < init_len) {
-    sent += write(m_debugSocketFd, msgBuffer + sent, init_len - sent);
-  }
+  xdebug_xml_node *response = xdebug_xml_node_init("init");
+  xdebug_xml_add_attribute(response, "xmlns", "urn:debugger_protocol_v1");
+  xdebug_xml_add_attribute(response, "xmlns:xdebug", "http://xdebug.org/dbgp/xdebug");
+
+/* {{{ XML Init Stuff*/
+  xdebug_xml_node *child = xdebug_xml_node_init("engine");
+  xdebug_xml_add_attribute(child, "version", XDEBUG_VERSION);
+  xdebug_xml_add_text(child, xdstrdup(XDEBUG_NAME));
+  xdebug_xml_add_child(response, child);
+
+  child = xdebug_xml_node_init("author");
+  xdebug_xml_add_text(child, xdstrdup(XDEBUG_AUTHOR));
+  xdebug_xml_add_child(response, child);
+
+  child = xdebug_xml_node_init("url");
+  xdebug_xml_add_text(child, xdstrdup(XDEBUG_URL));
+  xdebug_xml_add_child(response, child);
+
+  child = xdebug_xml_node_init("copyright");
+  xdebug_xml_add_text(child, xdstrdup(XDEBUG_COPYRIGHT));
+  xdebug_xml_add_child(response, child);
+
+  xdebug_xml_add_attribute_ex(response, "fileuri", xdstrdup("dbgp://stdin"), 0, 1);
+  xdebug_xml_add_attribute_ex(response, "language", "PHP", 0, 0);
+  xdebug_xml_add_attribute_ex(response, "protocol_version", DBGP_VERSION, 0, 0);
+  xdebug_xml_add_attribute_ex(response, "appid", xdebug_sprintf("%d", getpid()), 0, 1);
+
+  send_message(m_debugSocketFd, response);
+  xdebug_xml_node_dtor(response);
 }
 
 void XDebugExtension::handleDebuggingConnections() {
