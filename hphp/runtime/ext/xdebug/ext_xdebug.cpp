@@ -226,12 +226,11 @@ static const StaticString s_XDEBUG_CC_UNUSED("XDEBUG_CC_UNUSED");
 static const StaticString s_XDEBUG_CC_DEAD_CODE("XDEBUG_CC_DEAD_CODE");
 
 bool XDebugExtension::connectRemoteDebugSocket() {
-  char msgBuffer[40960]; // used for writing resposnes to IntelliJ
-  char commandBuffer[4096]; // used for reading commands from IntelliJ
   struct sockaddr_in serverAddress;
   struct hostent *serverHost;
+  int sockfd;
+  int portno = 9000;
 
-  portno = 9000;
   bzero((char *) &serverAddress, sizeof(serverAddress));
   serverAddress.sin_family = AF_INET;
 
@@ -329,12 +328,37 @@ char* XDebugExtension::read_next_command(int sock_fd, fd_buf *context)
   return tmp;
 }
 
+size_t XDebugExtension::prepare_message(char *msgBuffer /* has to be sufficiently large */, const char *str, int transactionId)
+{
+  const char *xmlHeader = "<?xml version=\"1.0\" encoding=\"iso-8859-1\"?>\n";
+  char sizeStr[255];
+  char *bufPtr = msgBuffer;
+  char *xmlMsg = new char[strlen(str) + 100];
+  if (transactionId >= 0)
+    sprintf(xmlMsg, str, transactionId);
+  else
+    sprintf(xmlMsg, "%s", str);
+  size_t msgLen = strlen(xmlHeader) + strlen(xmlMsg);
+  sprintf(sizeStr, "%d", (int) msgLen);
+  memcpy(bufPtr, sizeStr, strlen(sizeStr));
+  // skip 1 char for 0
+  bufPtr += (strlen(sizeStr) + 1);
+  memcpy(bufPtr, xmlHeader, strlen(xmlHeader)); // no null_terminating string
+  bufPtr += strlen(xmlHeader);
+  memcpy(bufPtr, xmlMsg, strlen(xmlMsg));
+  bufPtr += strlen(xmlMsg) + 1;
+  printf("msgLen = %d\nmsg = %s", (int) msgLen, msgBuffer +strlen(sizeStr) + 1);
+  return (bufPtr - msgBuffer);
+}
+
+
 void XDebugExtension::setupXDebugSession() {
+  char msgBuffer[40960]; // used for writing resposnes to IntelliJ
   const char* init_msg = "<init xmlns=\"urn:debugger_protocol_v1\" xmlns:xdebug=\"http://xdebug.org/dbgp/xdebug\" fileuri=\"file:///box/www/ochotinun/index.php\" language=\"PHP\" protocol_version=\"1.0\" appid=\"20311\"><engine version=\"2.2.1\"><![CDATA[Xdebug]]></engine><author><![CDATA[Derick Rethans]]></author><url><![CDATA[http://xdebug.org]]></url><copyright><![CDATA[Copyright (c) 2002-2012 by Derick Rethans]]></copyright></init>";
-  int64_t init_len = strlen(init_msg) + 1;
   int64_t sent = 0;
+  size_t init_len = prepare_message(msgBuffer, init_msg, -1);
   while (sent < init_len) {
-    sent += write(m_debugSocketFd, init_msg + sent, init_len - sent);
+    sent += write(m_debugSocketFd, msgBuffer + sent, init_len - sent);
   }
 }
 
@@ -344,8 +368,9 @@ void XDebugExtension::handleDebuggingConnections() {
   fd_buf buffer { nullptr, 0 };
 
   while (true) {
-    char* command = read_next_command(m_debugSocket->fd(), &buffer);
+    char* command = read_next_command(m_debugSocketFd, &buffer);
     if (!command) {
+      TRACE(0, "Got a null command!!!!\n");
       sleep(1);
       continue;
     }

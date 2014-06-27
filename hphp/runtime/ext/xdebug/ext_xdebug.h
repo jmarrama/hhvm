@@ -132,6 +132,7 @@ private:
 
   char* read_next_command(int sock_fd, fd_buf *context);
   void setupXDebugSession();
+  size_t prepare_message(char *msgBuffer /* has to be sufficiently large */, const char *str, int transactionId);
 };
 
 ///////////////////////////////////////////////////////////////////////////////
