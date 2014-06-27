@@ -108,6 +108,7 @@ namespace Trace {
       TM(runtime)     \
       TM(debugger)    \
       TM(debuggerflow) \
+      TM(xdebug)    \
       TM(debuginfo)   \
       TM(stats)       \
       TM(emitter)     \

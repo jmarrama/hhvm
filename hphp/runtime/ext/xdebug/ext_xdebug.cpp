@@ -21,8 +21,13 @@
 #include "hphp/runtime/base/thread-info.h"
 #include "hphp/runtime/vm/unwind.h"
 #include "hphp/runtime/vm/vm-regs.h"
+#include "hphp/util/logger.h"
+
+TRACE_SET_MOD(xdebug);
 
 namespace HPHP {
+
+#define XDEBUG_COMMAND_DELIM '\0'
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -220,10 +225,143 @@ static TypedValue* HHVM_FN(xdebug_var_dump)(ActRec* ar)
 static const StaticString s_XDEBUG_CC_UNUSED("XDEBUG_CC_UNUSED");
 static const StaticString s_XDEBUG_CC_DEAD_CODE("XDEBUG_CC_DEAD_CODE");
 
+bool XDebugExtension::connectRemoteDebugSocket() {
+  char msgBuffer[40960]; // used for writing resposnes to IntelliJ
+  char commandBuffer[4096]; // used for reading commands from IntelliJ
+  struct sockaddr_in serverAddress;
+  struct hostent *serverHost;
+
+  portno = 9000;
+  bzero((char *) &serverAddress, sizeof(serverAddress));
+  serverAddress.sin_family = AF_INET;
+
+  serverHost = gethostbyname("localhost");
+  bcopy((char *)serverHost->h_addr,
+      (char *)&serverAddress.sin_addr.s_addr,
+      serverHost->h_length);
+
+  serverAddress.sin_port = htons(portno);
+
+  sockfd = socket(AF_INET, SOCK_STREAM, 0);
+  if (sockfd < 0)
+    return false;
+  if (connect(sockfd,(struct sockaddr *) &serverAddress,sizeof(serverAddress)) < 0)
+    return false;
+
+  m_debugSocketFd = sockfd;
+  return true;
+/*
+  struct addrinfo *ai;
+  struct addrinfo hint;
+  memset(&hint, 0, sizeof(hint));
+  hint.ai_family = AF_UNSPEC;
+  hint.ai_socktype = SOCK_STREAM;
+  hint.ai_family = AF_INET;
+
+  // hardcode this crap for now
+  const char* host = "localhost";
+  int port = 9000;
+
+  if (getaddrinfo(host, nullptr, &hint, &ai)) {
+    return false;
+  }
+
+  SCOPE_EXIT {
+    freeaddrinfo(ai);
+  };
+
+  struct addrinfo *cur;
+  for (cur = ai; cur; cur = ai->ai_next) {
+    Socket *sock = new Socket(socket(cur->ai_family, cur->ai_socktype, 0),
+        cur->ai_family, cur->ai_addr->sa_data, port);
+    if (f_socket_connect(sock, String(host), port)) {
+      m_debugSocket = sock;
+      return true;
+    }
+    delete sock;
+  }
+  return false;
+*/
+}
+
+char* XDebugExtension::read_next_command(int sock_fd, fd_buf *context)
+{
+  int size = 0, newl = 0, nbufsize = 0;
+  char *tmp;
+  char *tmp_buf = NULL;
+  char *ptr;
+  char buffer[128 + 1];
+
+  if (!context->buffer) {
+    context->buffer = (char*) calloc(1,1);
+    context->buffer_size = 0;
+  }
+
+  while (context->buffer_size < 1 || context->buffer[context->buffer_size - 1] != XDEBUG_COMMAND_DELIM) {
+    ptr = context->buffer + context->buffer_size;
+    newl = recv(sock_fd, buffer, 128, 0);
+    if (newl > 0) {
+      context->buffer = (char*) realloc(context->buffer, context->buffer_size + newl + 1);
+      memcpy(context->buffer + context->buffer_size, buffer, newl);
+      context->buffer_size += newl;
+      context->buffer[context->buffer_size] = '\0';
+    } else {
+      return NULL;
+    }
+  }
+
+  ptr = (char*) memchr(context->buffer, XDEBUG_COMMAND_DELIM, context->buffer_size);
+  size = ptr - context->buffer;
+  /* Copy that line into tmp */
+  tmp = (char*) malloc(size + 1);
+  tmp[size] = '\0';
+  memcpy(tmp, context->buffer, size);
+  /* Rewrite existing buffer */
+  if ((nbufsize = context->buffer_size - size - 1)  > 0) {
+    tmp_buf = (char*) malloc(nbufsize + 1);
+    memcpy(tmp_buf, ptr + 1, nbufsize);
+    tmp_buf[nbufsize] = 0;
+  }
+  free(context->buffer);
+  context->buffer = tmp_buf;
+  context->buffer_size = context->buffer_size - (size + 1);
+
+  return tmp;
+}
+
+void XDebugExtension::setupXDebugSession() {
+  const char* init_msg = "<init xmlns=\"urn:debugger_protocol_v1\" xmlns:xdebug=\"http://xdebug.org/dbgp/xdebug\" fileuri=\"file:///box/www/ochotinun/index.php\" language=\"PHP\" protocol_version=\"1.0\" appid=\"20311\"><engine version=\"2.2.1\"><![CDATA[Xdebug]]></engine><author><![CDATA[Derick Rethans]]></author><url><![CDATA[http://xdebug.org]]></url><copyright><![CDATA[Copyright (c) 2002-2012 by Derick Rethans]]></copyright></init>";
+  int64_t init_len = strlen(init_msg) + 1;
+  int64_t sent = 0;
+  while (sent < init_len) {
+    sent += write(m_debugSocketFd, init_msg + sent, init_len - sent);
+  }
+}
+
+void XDebugExtension::handleDebuggingConnections() {
+  setupXDebugSession();
+  TRACE(0, "Handling debugging connections!\n");
+  fd_buf buffer { nullptr, 0 };
+
+  while (true) {
+    char* command = read_next_command(m_debugSocket->fd(), &buffer);
+    if (!command) {
+      sleep(1);
+      continue;
+    }
+    TRACE(0, "Got command %s!\n", command);
+    TRACE(0, "Handling debugging connections in sleep loop!\n");
+    free(command);
+  }
+}
+
 void XDebugExtension::moduleLoad(const IniSetting::Map& ini, Hdf xdebug_hdf) {
+  TRACE(0, "Xdebug being loaded!\n");
   Hdf hdf = xdebug_hdf[XDEBUG_NAME];
   Enable = Config::GetBool(ini, hdf["enable"], false);
+  Enable = true;
   if (!Enable) {
+    TRACE(0, "XDebug NOT loaded!");
     return;
   }
 
@@ -241,9 +379,11 @@ void XDebugExtension::moduleLoad(const IniSetting::Map& ini, Hdf xdebug_hdf) {
   Config::Bind(DumpRequest, ini, dump["REQUEST"], "");
   Config::Bind(DumpServer, ini, dump["SERVER"], "");
   Config::Bind(DumpSession, ini, dump["SESSION"], "");
+  TRACE(0, "XDebug finished loading!\n");
 }
 
 void XDebugExtension::moduleInit() {
+  TRACE(0, "XDebug starting init!\n");
   if (!Enable) {
     return;
   }
@@ -285,6 +425,16 @@ void XDebugExtension::moduleInit() {
   HHVM_FE(xdebug_time_index);
   HHVM_FE(xdebug_var_dump);
   loadSystemlib("xdebug");
+
+  if (!connectRemoteDebugSocket()) {
+    TRACE(0, "DEBUG SOCKET FAILED TO CONNECT!!!!!");
+    return;
+  }
+
+  m_remoteDebugThread.start();
+  // TODO - make this die gracefully on shutdown
+
+  TRACE(0, "XDebug finished init!\n");
 }
 
 // Non-bind config options and edge-cases

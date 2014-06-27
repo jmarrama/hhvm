@@ -19,6 +19,9 @@
 #define incl_HPHP_EXT_XDEBUG_H_
 
 #include "hphp/runtime/base/base-includes.h"
+#include "hphp/runtime/ext/ext_socket.h"
+#include "hphp/runtime/base/socket.h"
+#include "hphp/util/async-func.h"
 
 using std::string;
 
@@ -89,9 +92,16 @@ const int64_t k_XDEBUG_CC_UNUSED = 1;
 const int64_t k_XDEBUG_CC_DEAD_CODE = 2;
 ///////////////////////////////////////////////////////////////////////////////
 
+typedef struct _fd_buf fd_buf;
+struct _fd_buf {
+  char *buffer;
+  int   buffer_size;
+};
+
 class XDebugExtension : public Extension {
 public:
-  XDebugExtension() : Extension(XDEBUG_NAME, XDEBUG_VERSION) { }
+  XDebugExtension() : Extension(XDEBUG_NAME, XDEBUG_VERSION),
+    m_remoteDebugThread(this, &XDebugExtension::handleDebuggingConnections) { }
 
   // Standard config options
   #define XDEBUG_OPT(T, name, sym, val) static T sym;
@@ -110,6 +120,18 @@ public:
 
   virtual void moduleLoad(const IniSetting::Map& ini, Hdf xdebug_hdf);
   virtual void moduleInit();
+
+  void handleDebuggingConnections();
+
+private:
+  bool connectRemoteDebugSocket();
+  
+  //Socket* m_debugSocket;
+  int m_debugSocketFd;
+  AsyncFunc<XDebugExtension> m_remoteDebugThread;
+
+  char* read_next_command(int sock_fd, fd_buf *context);
+  void setupXDebugSession();
 };
 
 ///////////////////////////////////////////////////////////////////////////////
