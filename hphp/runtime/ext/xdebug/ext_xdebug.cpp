@@ -17,6 +17,8 @@
 
 #include "hphp/runtime/ext/xdebug/ext_xdebug.h"
 #include "hphp/runtime/ext/xdebug/xdebug_xml.h"
+#include "hphp/runtime/ext/xdebug/xdebug_dbgp.h"
+
 #include "hphp/runtime/base/code-coverage.h"
 #include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/base/thread-info.h"
@@ -281,38 +283,6 @@ bool XDebugExtension::connectRemoteDebugSocket() {
 
   m_debugSocketFd = sockfd;
   return true;
-/*
-  struct addrinfo *ai;
-  struct addrinfo hint;
-  memset(&hint, 0, sizeof(hint));
-  hint.ai_family = AF_UNSPEC;
-  hint.ai_socktype = SOCK_STREAM;
-  hint.ai_family = AF_INET;
-
-  // hardcode this crap for now
-  const char* host = "localhost";
-  int port = 9000;
-
-  if (getaddrinfo(host, nullptr, &hint, &ai)) {
-    return false;
-  }
-
-  SCOPE_EXIT {
-    freeaddrinfo(ai);
-  };
-
-  struct addrinfo *cur;
-  for (cur = ai; cur; cur = ai->ai_next) {
-    Socket *sock = new Socket(socket(cur->ai_family, cur->ai_socktype, 0),
-        cur->ai_family, cur->ai_addr->sa_data, port);
-    if (f_socket_connect(sock, String(host), port)) {
-      m_debugSocket = sock;
-      return true;
-    }
-    delete sock;
-  }
-  return false;
-*/
 }
 
 char* XDebugExtension::read_next_command(int sock_fd, fd_buf *context)
@@ -398,15 +368,23 @@ void XDebugExtension::handleDebuggingConnections() {
   fd_buf buffer { nullptr, 0 };
 
   while (true) {
-    char* command = read_next_command(m_debugSocketFd, &buffer);
-    if (!command) {
+    char* line = read_next_command(m_debugSocketFd, &buffer);
+    if (!line) {
       TRACE(0, "Got a null command!!!!\n");
       sleep(1);
       continue;
     }
-    TRACE(0, "Got command %s!\n", command);
+
+    xdebug_dbgp_arg *args;
+    char* cmd = nullptr;
+    int statuscode = xdebug_dbgp_parse_cmd(line, (char**) &cmd, (xdebug_dbgp_arg**) &args);
+
+    xdebug_dbgp_cmd *command = lookup_cmd(cmd);
+
+    TRACE(0, "Got input %s!\n", line);
+    TRACE(0, "parsed with status code %d\n", statuscode);
+    TRACE(0, "command has name %s\n", command->name);
     TRACE(0, "Handling debugging connections in sleep loop!\n");
-    free(command);
   }
 }
 
