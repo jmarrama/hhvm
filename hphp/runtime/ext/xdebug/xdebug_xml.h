@@ -73,4 +73,6 @@ void xdebug_xml_add_text_encode(xdebug_xml_node *xml, char *text);
 void xdebug_xml_return_node(xdebug_xml_node* node, struct xdebug_str *output);
 void xdebug_xml_node_dtor(xdebug_xml_node* xml);
 
+unsigned char *my_php_base64_decode(const unsigned char *str, int length, int *ret_length);
+
 #endif

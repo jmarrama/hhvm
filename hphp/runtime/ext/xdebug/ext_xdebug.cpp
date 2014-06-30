@@ -375,16 +375,43 @@ void XDebugExtension::handleDebuggingConnections() {
       continue;
     }
 
+    xdebug_xml_node *response = xdebug_xml_node_init("response");
     xdebug_dbgp_arg *args;
     char* cmd = nullptr;
     int statuscode = xdebug_dbgp_parse_cmd(line, (char**) &cmd, (xdebug_dbgp_arg**) &args);
 
     xdebug_dbgp_cmd *command = lookup_cmd(cmd);
 
+    // TODO - probably should handle errors like xdebug does.... 
+    xdebug_xml_add_attribute_ex(response, "command", xdstrdup(cmd), 0, 1);
+    xdebug_xml_add_attribute_ex(response, "transaction_id", xdstrdup(CMD_OPTION('i')), 0, 1);
+
+    if (0 == strcmp(command->name, "feature_set")) {
+      // always return success? lol
+      xdebug_xml_add_attribute_ex(response, "feature", xdstrdup(CMD_OPTION('n')), 0, 1);
+      xdebug_xml_add_attribute_ex(response, "success", "1", 0, 0);
+    } else if (0 == strcmp(command->name, "status")) {
+      xdebug_xml_add_attribute(response, "status", "starting");
+      xdebug_xml_add_attribute(response, "reason", "ok");
+    } else if (0 == strcmp(command->name, "step_into")) {
+      xdebug_xml_add_attribute(response, "status", "running");
+      xdebug_xml_add_attribute(response, "reason", "ok");
+    } else if (0 == strcmp(command->name, "eval")) {
+      int new_length;
+      TRACE(0, "Eval data decoded: %s\n", (char*) my_php_base64_decode((const unsigned char *)CMD_OPTION('-'), strlen(CMD_OPTION('-')), &new_length));
+    }
+
     TRACE(0, "Got input %s!\n", line);
     TRACE(0, "parsed with status code %d\n", statuscode);
     TRACE(0, "command has name %s\n", command->name);
     TRACE(0, "Handling debugging connections in sleep loop!\n");
+
+    // send it! TODO - dont send on errors
+    send_message(m_debugSocketFd, response);
+
+    // cleanup!
+    xdfree(cmd);
+    xdebug_dbgp_arg_dtor(args);
   }
 }
 

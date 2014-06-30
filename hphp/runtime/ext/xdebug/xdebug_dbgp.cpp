@@ -58,6 +58,18 @@ static xdebug_dbgp_cmd dbgp_commands[] = {
 ** Utility functions
 */
 
+void xdebug_dbgp_arg_dtor(xdebug_dbgp_arg *arg)
+{
+  int i;
+
+  for (i = 0; i < 27; i++) {
+    if (arg->value[i]) {
+      xdfree(arg->value[i]);
+    }
+  }
+  xdfree(arg);
+}
+
 xdebug_dbgp_cmd* lookup_cmd(char *cmd)
 {
   xdebug_dbgp_cmd *ptr = dbgp_commands;

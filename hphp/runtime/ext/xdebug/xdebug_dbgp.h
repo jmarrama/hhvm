@@ -25,6 +25,7 @@ TODO add copyright
 #define XDEBUG_ERROR_UNIMPLEMENTED                   4
 #define XDEBUG_ERROR_COMMAND_UNAVAILABLE             5
 
+#define CMD_OPTION(opt)    (opt == '-' ? args->value[26] : args->value[(opt) - 'a'])
 
 /*
 #define DBGP_FUNC_ENTRY(name,flags)       { #name, xdebug_dbgp_handle_##name, 0, flags },
@@ -50,5 +51,6 @@ typedef struct _xdebug_dbgp_cmd xdebug_dbgp_cmd;
 
 int xdebug_dbgp_parse_cmd(char *line, char **cmd, xdebug_dbgp_arg **ret_args);
 xdebug_dbgp_cmd* lookup_cmd(char *cmd);
+void xdebug_dbgp_arg_dtor(xdebug_dbgp_arg *arg);
 
 #endif //__HAVE_XDEBUG_DBGP_H__
