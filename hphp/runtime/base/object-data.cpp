@@ -700,6 +700,13 @@ inline Array getSerializeProps(const ObjectData* obj,
                   cls->name()->data());
     return obj->o_toArray();
   }
+	// BIG IMPORTANT NOTE: this is a temporary workaround for a horrible recursive
+	// bug found in HHVM! This manifests itself calling print_r on closures made
+	// some special way in PHPUnit. This will be fixed when the Runtime team upgrades
+	// HHVM
+	if (UNLIKELY(obj->instanceof(SystemLib::s_ClosureClass))) {
+		return empty_array();
+	}
   Variant ret = const_cast<ObjectData*>(obj)->o_invoke_few_args(s_debugInfo, 0);
   if (ret.isArray()) {
     return ret.toArray();
