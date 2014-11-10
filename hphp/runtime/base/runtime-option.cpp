@@ -703,6 +703,8 @@ void RuntimeOption::Load(const IniSetting::Map& ini,
     ));
 
     Config::Bind(Logger::LogHeader, ini, logger["Header"]);
+    Logger::SetTheLogger(new ExtendedLogger());
+    ExtendedLogger::EnabledByDefault = true;
     Config::Bind(Logger::LogNativeStackTrace, ini, logger["NativeStackTrace"],
                  true);
     Config::Bind(Logger::MaxMessagesPerRequest, ini,

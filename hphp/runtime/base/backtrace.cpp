@@ -86,7 +86,7 @@ Array createBacktrace(const BacktraceArgs& btArgs) {
   }
 
   VMRegAnchor _;
-  if (!vmfp()) {
+  if (!RDS::header() || !vmfp()) {
     // If there are no VM frames, we're done
     return bt;
   }
