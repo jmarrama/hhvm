@@ -28,6 +28,7 @@
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/server/server-stats.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
+#include "hphp/util/lock.h"
 #include <openssl/ssl.h>
 #include <curl/curl.h>
 #include <curl/easy.h>
@@ -57,6 +58,46 @@ using std::vector;
 const StaticString
   s_exception("exception"),
   s_previous("previous");
+
+
+//////////////////////////////////////////////////////////////////////
+/**
+ * This is a helper class used to implement a process-wide pool of libcurl
+ * handles. This provides very large performance benefits, as libcurl handles
+ * hold connections open and cache SSL session ids over their lifetimes.
+ * All operations on this class are thread safe.
+ */
+class CurlHandlePool {
+public:
+  CURL* get() {
+    Lock lock(m_mutex);
+    if (m_handleStack.empty()) {
+      return nullptr;
+    }
+    
+    CURL* ret = m_handleStack.top();
+    m_handleStack.pop();
+    return ret;
+  }
+
+  void push(CURL* handle) {
+    Lock lock(m_mutex);
+    m_handleStack.push(handle);
+  }
+
+  ~CurlHandlePool() {
+    Lock lock(m_mutex);
+    while (!m_handleStack.empty()) {
+      CURL *handle = m_handleStack.top();
+      curl_easy_cleanup(handle);
+      m_handleStack.pop();
+    }
+  }
+
+private:
+  std::stack<CURL*> m_handleStack;
+  Mutex m_mutex;
+};
 
 ///////////////////////////////////////////////////////////////////////////////
 // helper data structure
@@ -106,13 +147,25 @@ private:
   };
 
 public:
+  static bool EnableConnectionPooling;
+  static CurlHandlePool* handlePool;
+
   CLASSNAME_IS("curl")
   // overriding ResourceData
   virtual const String& o_getClassNameHook() const { return classnameof(); }
 
   explicit CurlResource(const String& url)
     : m_exception(nullptr), m_phpException(false), m_emptyPost(true) {
-    m_cp = curl_easy_init();
+    if (EnableConnectionPooling) {
+      CURL* handle = handlePool->get();
+      if (handle) {
+        m_cp = handle;
+      } else {
+        m_cp = curl_easy_init();
+      }
+    } else {
+      m_cp = curl_easy_init();
+    }
     m_url = url;
 
     memset(m_error_str, 0, sizeof(m_error_str));
@@ -180,7 +233,13 @@ public:
   void closeForSweep() {
     assert(!m_exception);
     if (m_cp) {
-      curl_easy_cleanup(m_cp);
+      if (EnableConnectionPooling) {
+        // reuse this curl handle if we're pooling
+        curl_easy_reset(m_cp);
+        handlePool->push(m_cp); 
+      } else {
+        curl_easy_cleanup(m_cp);
+      }
       m_cp = nullptr;
     }
     m_to_free.reset();
@@ -920,6 +979,9 @@ void CurlResource::sweep() {
   m_write_header.buf.release();
   closeForSweep();
 }
+
+bool CurlResource::EnableConnectionPooling = false;
+CurlHandlePool* CurlResource::handlePool = nullptr;
 
 CURLcode CurlResource::ssl_ctx_callback(CURL *curl, void *sslctx, void *parm) {
   // Set defaults from config.hdf
@@ -2978,8 +3040,25 @@ class CurlExtension final : public Extension {
     HHVM_FE(curl_multi_info_read);
     HHVM_FE(curl_multi_close);
 
+    Extension* ext = Extension::GetExtension("curl");
+    assert(ext);
+    IniSetting::Bind(ext, IniSetting::PHP_INI_ALL, "curl.enableConnectionPooling",
+      "false", &CurlResource::EnableConnectionPooling);
+
+    String value;
+    if (IniSetting::Get("curl.enableConnectionPooling", value)) {
+      CurlResource::handlePool = new CurlHandlePool();
+    }
+
     loadSystemlib();
   }
+
+  virtual void moduleShutdown() {
+    if (CurlResource::handlePool) {
+      delete CurlResource::handlePool;
+    }
+  }
+
 } s_curl_extension;
 
 }
